@@ -14,6 +14,15 @@ const nextConfig = {
   // quitar, se forma un bucle. Desactivamos ESE redirect (pero mantenemos
   // trailingSlash para que los enlaces que generamos lleven barra).
   skipTrailingSlashRedirect: true,
+  // Con basePath, la raíz pelada del dominio de Vercel (chess-xxx.vercel.app/)
+  // no tiene página y da 404. Redirigimos esa raíz al juego para que quien entre
+  // por el dominio directo (sin /ajedrez) acabe en la app. basePath:false hace que
+  // el "source" sea la raíz real del dominio, no /ajedrez.
+  async redirects() {
+    return [
+      { source: '/', destination: '/ajedrez', basePath: false, permanent: false },
+    ];
+  },
 };
 
 module.exports = nextConfig;
