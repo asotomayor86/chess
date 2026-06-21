@@ -68,7 +68,9 @@ export async function POST(_req: Request, { params }: { params: { codigo: string
         'Content-Type': 'application/json',
         Authorization: `Bearer ${secret}`,
       },
-      body: JSON.stringify({ kind: 'ranked', results }),
+      // closeRoom: true cierra la sala al terminar la partida (es una sola
+      // partida, no una serie). Sin esto el hub solo cerraría salas de liga/torneo.
+      body: JSON.stringify({ kind: 'ranked', closeRoom: true, results }),
     });
 
     // 409 (sala ya cerrada) o 404 (ya no existe) ⇒ alguien ya envió el resultado:
