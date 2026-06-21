@@ -38,19 +38,38 @@ export async function POST(_req: Request, { params }: { params: { codigo: string
       );
     }
 
-    const filas = await sql()`select estado from partidas where codigo = ${codigo}`;
-    if (filas.length === 0) {
-      return NextResponse.json({ error: 'no-existe' }, { status: 404 });
-    }
-    const estado = (filas[0] as { estado: EstadoPartida }).estado;
-    const serie = estado?.serie;
-    if (!serie || serie.fase !== 'fin') {
-      return NextResponse.json({ ok: true, omitido: 'partida-no-terminada' });
-    }
-    if (serie.resultadoEnviado) {
+    // Reclamo ATÓMICO: marcamos resultadoEnviado=true en una sola sentencia, pero
+    // SOLO si la partida ha terminado y aún no estaba enviado. Como los dos
+    // navegadores (uno por jugador) disparan este envío a la vez al ver el fin, sin
+    // esto ambos pasaban la comprobación y el resultado llegaba al hub dos veces
+    // (victoria contada doble). Con el UPDATE condicional, solo UNA petición gana el
+    // reclamo (devuelve fila); las demás reciben 0 filas y no reenvían.
+    const reclamo = await sql()`
+      update partidas
+      set estado = jsonb_set(estado, '{serie,resultadoEnviado}', 'true'::jsonb),
+          version = version + 1,
+          updated_at = now()
+      where codigo = ${codigo}
+        and estado->'serie'->>'fase' = 'fin'
+        and coalesce((estado->'serie'->>'resultadoEnviado')::boolean, false) = false
+      returning estado
+    `;
+    if (reclamo.length === 0) {
+      // No ganamos el reclamo: o la partida no ha terminado, o el otro jugador ya
+      // lo envió. Distinguimos leyendo el estado actual (sin reenviar nada).
+      const actual = await sql()`select estado from partidas where codigo = ${codigo}`;
+      if (actual.length === 0) {
+        return NextResponse.json({ error: 'no-existe' }, { status: 404 });
+      }
+      const e = (actual[0] as { estado: EstadoPartida }).estado;
+      if (!e?.serie || e.serie.fase !== 'fin') {
+        return NextResponse.json({ ok: true, omitido: 'partida-no-terminada' });
+      }
       return NextResponse.json({ ok: true, omitido: 'ya-enviado' });
     }
 
+    const estado = (reclamo[0] as { estado: EstadoPartida }).estado;
+    const serie = estado.serie;
     const [id0, id1] = serie.userIds;
     const results = serie.empateSerie
       ? [
@@ -73,25 +92,24 @@ export async function POST(_req: Request, { params }: { params: { codigo: string
       body: JSON.stringify({ kind: 'ranked', closeRoom: true, results }),
     });
 
-    // 409 (sala ya cerrada) o 404 (ya no existe) ⇒ alguien ya envió el resultado:
-    // lo tratamos como éxito y marcamos para no reintentar.
+    // 409 (sala ya cerrada) o 404 (ya no existe) ⇒ el resultado ya estaba puesto:
+    // lo tratamos como éxito (dejamos el reclamo marcado, no reintentamos).
     const yaCerrada = r.status === 409 || r.status === 404;
     if (!r.ok && !yaCerrada) {
+      // Falló de verdad: revertimos el reclamo para que se pueda reintentar.
+      await sql()`
+        update partidas
+        set estado = jsonb_set(estado, '{serie,resultadoEnviado}', 'false'::jsonb),
+            version = version + 1,
+            updated_at = now()
+        where codigo = ${codigo}
+      `;
       const detalle = await r.text().catch(() => '');
       return NextResponse.json(
         { error: `El hub rechazó el resultado (${r.status}). ${detalle}`.trim() },
         { status: 502 },
       );
     }
-
-    // Marca la partida como enviada (sin tocar el resto del estado).
-    await sql()`
-      update partidas
-      set estado = jsonb_set(estado, '{serie,resultadoEnviado}', 'true'::jsonb),
-          version = version + 1,
-          updated_at = now()
-      where codigo = ${codigo}
-    `;
 
     return NextResponse.json({ ok: true, enviado: true });
   } catch (e: unknown) {
