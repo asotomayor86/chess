@@ -48,7 +48,14 @@ export async function GET(_req: Request, { params }: { params: { codigo: string 
     }
     const sala = (await r.json()) as { players?: JugadorHub[] };
 
-    const jugadores = (sala.players ?? []).filter((p) => p.role === 'player');
+    // IMPORTANTE: el hub no garantiza un orden estable de los jugadores (su
+    // consulta no lleva ORDER BY), así que cada jugador podría calcular un asiento
+    // distinto y los dos creerse el "asiento 0" → el invitado nunca se uniría y
+    // ambos se quedarían en "esperando rival". Ordenamos por userId para que el
+    // asiento sea el MISMO para los dos, independientemente del orden del hub.
+    const jugadores = (sala.players ?? [])
+      .filter((p) => p.role === 'player')
+      .sort((a, b) => (a.userId < b.userId ? -1 : a.userId > b.userId ? 1 : 0));
     const idx = jugadores.findIndex((p) => p.userId === usuario.id);
     if (idx === -1 || idx > 1) {
       return NextResponse.json(
